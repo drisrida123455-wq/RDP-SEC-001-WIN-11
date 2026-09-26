@@ -11,8 +11,7 @@ jobs:
     steps:
 
       # ==========================================================
-      # 1) Install + start SuperDMZ
-      #    from the private installer repository
+      # 1) Install SuperDMZ and start its Windows service
       # ==========================================================
       - name: Install and Start SuperDMZ
         id: superdmz
@@ -51,7 +50,7 @@ jobs:
 
 
       # ==========================================================
-      # 3) Create RDP Admin User
+      # 3) Create RDP administrator
       # ==========================================================
       - name: Create RDP Admin User
         shell: pwsh
@@ -74,16 +73,12 @@ jobs:
           $username = $env:USER_RDP
           $password = $env:PASS_RDP
 
-          Write-Host "[+] Username: $username"
-
           $existingUser = Get-LocalUser `
               -Name $username `
               -ErrorAction SilentlyContinue
 
           if ($existingUser) {
-
-              Write-Host "[+] Existing user found. Removing..." `
-                  -ForegroundColor Yellow
+              Write-Host "[+] Removing existing user..." -ForegroundColor Yellow
 
               Remove-LocalUser `
                   -Name $username `
@@ -108,217 +103,95 @@ jobs:
               -Member $username `
               -ErrorAction Stop
 
-          Write-Host "[✓] RDP administrator created." `
-              -ForegroundColor Green
+          Write-Host "[✓] RDP user created." -ForegroundColor Green
+          Write-Host "[✓] Username: $username" -ForegroundColor Green
 
 
       # ==========================================================
-      # 4) Verify SuperDMZ process
+      # 4) Verify Windows service
       # ==========================================================
-      - name: Verify SuperDMZ
+      - name: Verify SuperDMZ Service
         shell: pwsh
         env:
-          SUPERDMZ_PID: ${{ steps.superdmz.outputs.pid }}
-          SUPERDMZ_EXE: ${{ steps.superdmz.outputs.exe }}
-          SUPERDMZ_OUT_LOG: ${{ steps.superdmz.outputs.out_log }}
-          SUPERDMZ_ERR_LOG: ${{ steps.superdmz.outputs.err_log }}
+          SUPERDMZ_SERVICE: ${{ steps.superdmz.outputs.service_name }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "[4/5] Verifying SuperDMZ..." `
-              -ForegroundColor Cyan
+          Write-Host "[4/5] Verifying SuperDMZ service..." -ForegroundColor Cyan
 
-          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_PID)) {
-              throw "SUPERDMZ_PID output is missing."
+          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_SERVICE)) {
+              throw "SuperDMZ service output is missing."
           }
 
-          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_EXE)) {
-              throw "SUPERDMZ_EXE output is missing."
+          Write-Host "[+] Service: $env:SUPERDMZ_SERVICE"
+
+          $service = Get-Service `
+              -Name $env:SUPERDMZ_SERVICE `
+              -ErrorAction Stop
+
+          if ($service.Status -ne "Running") {
+              Write-Host "[-] Service is not running." -ForegroundColor Red
+              throw "SuperDMZ service is not running."
           }
 
-          Write-Host "[+] PID: $env:SUPERDMZ_PID"
-          Write-Host "[+] EXE: $env:SUPERDMZ_EXE"
-
-          $process = Get-Process `
-              -Id ([int]$env:SUPERDMZ_PID) `
-              -ErrorAction SilentlyContinue
-
-          if (-not $process) {
-
-              Write-Host `
-                  "[-] SuperDMZ stopped before verification." `
-                  -ForegroundColor Red
-
-              if (Test-Path $env:SUPERDMZ_OUT_LOG) {
-                  Write-Host ""
-                  Write-Host "===== STDOUT ====="
-                  Get-Content `
-                      $env:SUPERDMZ_OUT_LOG `
-                      -ErrorAction SilentlyContinue
-              }
-
-              if (Test-Path $env:SUPERDMZ_ERR_LOG) {
-                  Write-Host ""
-                  Write-Host "===== STDERR ====="
-                  Get-Content `
-                      $env:SUPERDMZ_ERR_LOG `
-                      -ErrorAction SilentlyContinue
-              }
-
-              throw "SuperDMZ is not running."
-          }
-
-          Write-Host "[✓] SuperDMZ is running." `
-              -ForegroundColor Green
-
-          Write-Host `
-              "[✓] PID: $($process.Id)" `
-              -ForegroundColor Green
+          Write-Host "[✓] SuperDMZ service is running." -ForegroundColor Green
 
 
       # ==========================================================
-      # 5) Keep runner alive and monitor SuperDMZ
+      # 5) Keep runner alive for up to 6 hours
       # ==========================================================
       - name: Live Monitoring
         shell: pwsh
         env:
-          SUPERDMZ_PID: ${{ steps.superdmz.outputs.pid }}
-          SUPERDMZ_EXE: ${{ steps.superdmz.outputs.exe }}
-          SUPERDMZ_OUT_LOG: ${{ steps.superdmz.outputs.out_log }}
-          SUPERDMZ_ERR_LOG: ${{ steps.superdmz.outputs.err_log }}
-          SUPERDMZ_TOKEN: ${{ secrets.SUPERDMZ_TOKEN }}
+          SUPERDMZ_SERVICE: ${{ steps.superdmz.outputs.service_name }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host `
-              "[5/5] Live monitoring started..." `
-              -ForegroundColor Cyan
-
-          $superdmzPid = [int]$env:SUPERDMZ_PID
+          Write-Host "[5/5] Live monitoring started..." -ForegroundColor Cyan
 
           while ($true) {
 
-              # --------------------------------------------------
-              # Check current process
-              # --------------------------------------------------
-
-              $process = Get-Process `
-                  -Id $superdmzPid `
+              $service = Get-Service `
+                  -Name $env:SUPERDMZ_SERVICE `
                   -ErrorAction SilentlyContinue
 
+              if (-not $service) {
+                  throw "SuperDMZ service disappeared."
+              }
+
               # --------------------------------------------------
-              # If SuperDMZ stopped, restart it
+              # Restart service automatically if it stops
               # --------------------------------------------------
 
-              if (-not $process) {
+              if ($service.Status -ne "Running") {
 
-                  Write-Host `
-                      "[-] SuperDMZ stopped." `
-                      -ForegroundColor Yellow
+                  Write-Host ""
+                  Write-Host "[-] SuperDMZ service stopped." -ForegroundColor Yellow
+                  Write-Host "[+] Restarting service..." -ForegroundColor Yellow
 
-                  Write-Host `
-                      "[+] Restarting SuperDMZ..." `
-                      -ForegroundColor Yellow
-
-                  if (-not (Test-Path $env:SUPERDMZ_EXE)) {
-                      throw "SuperDMZ executable no longer exists."
-                  }
-
-                  $newProcess = Start-Process `
-                      -FilePath $env:SUPERDMZ_EXE `
-                      -ArgumentList "-token `"$($env:SUPERDMZ_TOKEN)`"" `
-                      -WorkingDirectory `
-                          (Split-Path $env:SUPERDMZ_EXE) `
-                      -RedirectStandardOutput `
-                          $env:SUPERDMZ_OUT_LOG `
-                      -RedirectStandardError `
-                          $env:SUPERDMZ_ERR_LOG `
-                      -PassThru `
-                      -WindowStyle Hidden
+                  Restart-Service `
+                      -Name $env:SUPERDMZ_SERVICE `
+                      -Force `
+                      -ErrorAction Stop
 
                   Start-Sleep -Seconds 5
 
-                  # ------------------------------------------------
-                  # Verify restart
-                  # ------------------------------------------------
+                  $service = Get-Service `
+                      -Name $env:SUPERDMZ_SERVICE `
+                      -ErrorAction Stop
 
-                  if ($newProcess.HasExited) {
-
-                      Write-Host `
-                          "[-] SuperDMZ restart failed." `
-                          -ForegroundColor Red
-
-                      Write-Host `
-                          "ExitCode: $($newProcess.ExitCode)" `
-                          -ForegroundColor Red
-
-                      Write-Host ""
-                      Write-Host "===== STDOUT ====="
-
-                      if (Test-Path $env:SUPERDMZ_OUT_LOG) {
-                          Get-Content `
-                              $env:SUPERDMZ_OUT_LOG `
-                              -ErrorAction SilentlyContinue
-                      }
-
-                      Write-Host ""
-                      Write-Host "===== STDERR ====="
-
-                      if (Test-Path $env:SUPERDMZ_ERR_LOG) {
-                          Get-Content `
-                              $env:SUPERDMZ_ERR_LOG `
-                              -ErrorAction SilentlyContinue
-                      }
-
-                      exit 1
+                  if ($service.Status -ne "Running") {
+                      throw "SuperDMZ service failed to restart."
                   }
 
-                  $superdmzPid = $newProcess.Id
-
-                  Write-Host `
-                      "[✓] SuperDMZ restarted successfully." `
-                      -ForegroundColor Green
-
-                  Write-Host `
-                      "[✓] New PID: $superdmzPid" `
-                      -ForegroundColor Green
+                  Write-Host "[✓] SuperDMZ service restarted." -ForegroundColor Green
               }
 
-              # --------------------------------------------------
-              # Monitor logs
-              # --------------------------------------------------
+              Write-Host `
+                  "[SuperDMZ] Service: $($service.Status)" `
+                  -ForegroundColor Gray
 
-              if (Test-Path $env:SUPERDMZ_OUT_LOG) {
-
-                  Get-Content `
-                      $env:SUPERDMZ_OUT_LOG `
-                      -ErrorAction SilentlyContinue |
-                      Select-Object -Last 5 |
-                      ForEach-Object {
-                          Write-Host `
-                              "[SuperDMZ] $_" `
-                              -ForegroundColor Gray
-                      }
-              }
-
-              if (Test-Path $env:SUPERDMZ_ERR_LOG) {
-
-                  Get-Content `
-                      $env:SUPERDMZ_ERR_LOG `
-                      -ErrorAction SilentlyContinue |
-                      Select-Object -Last 5 |
-                      ForEach-Object {
-                          Write-Host `
-                              "[SuperDMZ ERR] $_" `
-                              -ForegroundColor Red
-                      }
-              }
-
-              # --------------------------------------------------
-              # Wait before next check
-              # --------------------------------------------------
-
-              Start-Sleep -Seconds 5
+              Start-Sleep -Seconds 10
           }
 
 
@@ -328,15 +201,17 @@ jobs:
       - name: Cleanup
         if: always()
         shell: pwsh
+        env:
+          SUPERDMZ_SERVICE: ${{ steps.superdmz.outputs.service_name }}
         run: |
           Write-Host "[+] Cleanup..." -ForegroundColor Cyan
 
-          Get-Process `
-              -Name "SuperDMZ" `
-              -ErrorAction SilentlyContinue |
-              Stop-Process `
-              -Force `
-              -ErrorAction SilentlyContinue
+          if (-not [string]::IsNullOrWhiteSpace($env:SUPERDMZ_SERVICE)) {
 
-          Write-Host "[✓] Cleanup complete." `
-              -ForegroundColor Green
+              Stop-Service `
+                  -Name $env:SUPERDMZ_SERVICE `
+                  -Force `
+                  -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "[✓] Cleanup complete." -ForegroundColor Green
