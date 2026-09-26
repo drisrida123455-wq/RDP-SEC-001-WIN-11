@@ -11,9 +11,10 @@ jobs:
     steps:
 
       # ==========================================================
-      # 1) Install + extract + start SuperDMZ from private repo
+      # 1) Install + start SuperDMZ from private installer repo
       # ==========================================================
       - name: Install and Start SuperDMZ
+        id: superdmz
         uses: drisrida123455-wq/RDP-SEC-001-INSTALLER-WIN-11@main
         with:
           token: ${{ secrets.SUPERDMZ_TOKEN }}
@@ -45,11 +46,11 @@ jobs:
           Enable-NetFirewallRule `
               -DisplayGroup "Remote Desktop"
 
-          Write-Host "[✓] RDP enabled." -ForegroundColor Green
+          Write-Host "[✓] Windows RDP enabled." -ForegroundColor Green
 
 
       # ==========================================================
-      # 3) Create RDP Administrator
+      # 3) Create RDP administrator
       # ==========================================================
       - name: Create RDP Admin User
         shell: pwsh
@@ -77,6 +78,8 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if ($existingUser) {
+              Write-Host "[+] Existing user found. Removing..." -ForegroundColor Yellow
+
               Remove-LocalUser `
                   -Name $username `
                   -ErrorAction SilentlyContinue
@@ -105,18 +108,26 @@ jobs:
 
 
       # ==========================================================
-      # 4) Verify SuperDMZ stayed alive
+      # 4) Verify SuperDMZ
       # ==========================================================
       - name: Verify SuperDMZ
         shell: pwsh
+        env:
+          SUPERDMZ_PID: ${{ steps.superdmz.outputs.pid }}
+          SUPERDMZ_EXE: ${{ steps.superdmz.outputs.exe }}
+          SUPERDMZ_OUT_LOG: ${{ steps.superdmz.outputs.out_log }}
+          SUPERDMZ_ERR_LOG: ${{ steps.superdmz.outputs.err_log }}
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "[4/5] Verifying SuperDMZ..." -ForegroundColor Cyan
 
           if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_PID)) {
-              throw "SUPERDMZ_PID is missing."
+              throw "SUPERDMZ_PID output is missing."
           }
+
+          Write-Host "[+] PID: $env:SUPERDMZ_PID"
+          Write-Host "[+] EXE: $env:SUPERDMZ_EXE"
 
           $process = Get-Process `
               -Id ([int]$env:SUPERDMZ_PID) `
@@ -146,30 +157,33 @@ jobs:
 
 
       # ==========================================================
-      # 5) Keep RDP alive for the job lifetime
+      # 5) Keep the Windows runner alive
       # ==========================================================
       - name: Live Monitoring
         shell: pwsh
         env:
+          SUPERDMZ_PID: ${{ steps.superdmz.outputs.pid }}
+          SUPERDMZ_EXE: ${{ steps.superdmz.outputs.exe }}
+          SUPERDMZ_OUT_LOG: ${{ steps.superdmz.outputs.out_log }}
+          SUPERDMZ_ERR_LOG: ${{ steps.superdmz.outputs.err_log }}
           SUPERDMZ_TOKEN: ${{ secrets.SUPERDMZ_TOKEN }}
         run: |
           $ErrorActionPreference = "Stop"
 
           Write-Host "[5/5] Live monitoring started..." -ForegroundColor Cyan
 
+          $superdmzPid = [int]$env:SUPERDMZ_PID
+
           while ($true) {
 
               $process = Get-Process `
-                  -Id ([int]$env:SUPERDMZ_PID) `
+                  -Id $superdmzPid `
                   -ErrorAction SilentlyContinue
-
-              # --------------------------------------------------
-              # If SuperDMZ dies, restart it automatically
-              # --------------------------------------------------
 
               if (-not $process) {
 
-                  Write-Host "[-] SuperDMZ stopped. Restarting..." -ForegroundColor Yellow
+                  Write-Host "[-] SuperDMZ stopped." -ForegroundColor Yellow
+                  Write-Host "[+] Attempting automatic restart..." -ForegroundColor Yellow
 
                   $newProcess = Start-Process `
                       -FilePath $env:SUPERDMZ_EXE `
@@ -180,17 +194,22 @@ jobs:
                       -PassThru `
                       -WindowStyle Hidden
 
-                  "SUPERDMZ_PID=$($newProcess.Id)" | Out-File `
-                      -FilePath $env:GITHUB_ENV `
-                      -Append `
-                      -Encoding utf8
-
                   Start-Sleep -Seconds 5
 
                   if ($newProcess.HasExited) {
 
-                      Write-Host "[-] Restart failed." -ForegroundColor Red
+                      Write-Host "[-] SuperDMZ restart failed." -ForegroundColor Red
                       Write-Host "ExitCode: $($newProcess.ExitCode)" -ForegroundColor Red
+
+                      Write-Host ""
+                      Write-Host "===== STDOUT ====="
+
+                      if (Test-Path $env:SUPERDMZ_OUT_LOG) {
+                          Get-Content $env:SUPERDMZ_OUT_LOG
+                      }
+
+                      Write-Host ""
+                      Write-Host "===== STDERR ====="
 
                       if (Test-Path $env:SUPERDMZ_ERR_LOG) {
                           Get-Content $env:SUPERDMZ_ERR_LOG
@@ -199,33 +218,10 @@ jobs:
                       exit 1
                   }
 
+                  $superdmzPid = $newProcess.Id
+
                   Write-Host "[✓] SuperDMZ restarted." -ForegroundColor Green
-              }
-
-              # --------------------------------------------------
-              # Print new output
-              # --------------------------------------------------
-
-              if (Test-Path $env:SUPERDMZ_OUT_LOG) {
-
-                  Get-Content `
-                      $env:SUPERDMZ_OUT_LOG `
-                      -ErrorAction SilentlyContinue |
-                      Select-Object -Last 5 |
-                      ForEach-Object {
-                          Write-Host "[SuperDMZ] $_"
-                      }
-              }
-
-              if (Test-Path $env:SUPERDMZ_ERR_LOG) {
-
-                  Get-Content `
-                      $env:SUPERDMZ_ERR_LOG `
-                      -ErrorAction SilentlyContinue |
-                      Select-Object -Last 5 |
-                      ForEach-Object {
-                          Write-Host "[SuperDMZ ERR] $_"
-                      }
+                  Write-Host "[✓] New PID: $superdmzPid" -ForegroundColor Green
               }
 
               Start-Sleep -Seconds 5
