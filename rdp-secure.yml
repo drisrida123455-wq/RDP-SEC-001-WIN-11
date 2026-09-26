@@ -1,0 +1,292 @@
+name: Windows RDP via SuperDMZ
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: "RDP username"
+        required: true
+        type: string
+
+jobs:
+  rdp-setup:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+
+      # =========================================================
+      # 1) تنزيل SuperDMZ.exe من المستودع الخاص بالـInstaller
+      # =========================================================
+      - name: Download SuperDMZ Client
+        shell: pwsh
+        env:
+          INSTALLER_REPO_TOKEN: ${{ secrets.INSTALLER_REPO_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[1/5] بدء تحميل SuperDMZ.exe..." -ForegroundColor Cyan
+
+          if ([string]::IsNullOrWhiteSpace($env:INSTALLER_REPO_TOKEN)) {
+              throw "[-] INSTALLER_REPO_TOKEN غير موجود في Secrets!"
+          }
+
+          $owner = "drisrida123455-wq"
+          $repo = "RDP-SEC-001-INSTALLER-WIN-11"
+          $fileName = "SuperDMZ.exe"
+
+          $targetExec = "$env:GITHUB_WORKSPACE\SuperDMZ.exe"
+
+          $apiUrl = "https://api.github.com/repos/$owner/$repo/contents/$fileName?ref=main"
+
+          Write-Host "[+] المستودع: $repo" -ForegroundColor Gray
+          Write-Host "[+] الملف: $fileName" -ForegroundColor Gray
+
+          curl.exe -fL `
+            -H "Accept: application/vnd.github.raw+json" `
+            -H "Authorization: Bearer $env:INSTALLER_REPO_TOKEN" `
+            -H "X-GitHub-Api-Version: 2026-03-10" `
+            "$apiUrl" `
+            -o "$targetExec"
+
+          if (-not (Test-Path "$targetExec")) {
+              throw "[-] فشل تنزيل SuperDMZ.exe!"
+          }
+
+          $size = (Get-Item "$targetExec").Length
+
+          if ($size -le 0) {
+              throw "[-] الملف SuperDMZ.exe فارغ!"
+          }
+
+          Write-Host "[✓] تم تحميل SuperDMZ.exe بنجاح." -ForegroundColor Green
+          Write-Host "[✓] الحجم: $size bytes" -ForegroundColor Green
+
+
+      # =========================================================
+      # 2) تفعيل Windows RDP
+      # =========================================================
+      - name: Enable Windows RDP Services
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[2/5] تفعيل خدمات Windows RDP..." -ForegroundColor Cyan
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-Service `
+            -Name "TermService" `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name "TermService" `
+            -ErrorAction SilentlyContinue
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
+
+          Write-Host "[✓] تم تفعيل RDP وخدمة Terminal Server." -ForegroundColor Green
+
+
+      # =========================================================
+      # 3) إنشاء مستخدم RDP
+      # =========================================================
+      - name: Create RDP Admin User
+        shell: pwsh
+        env:
+          USER_RDP: ${{ inputs.username }}
+          PASS_RDP: ${{ secrets.PASS_RDP }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[3/5] إنشاء حساب RDP..." -ForegroundColor Cyan
+
+          if ([string]::IsNullOrWhiteSpace($env:USER_RDP)) {
+              throw "[-] username غير موجود!"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:PASS_RDP)) {
+              throw "[-] PASS_RDP غير موجود في Secrets!"
+          }
+
+          $username = $env:USER_RDP
+          $password = $env:PASS_RDP
+
+          try {
+
+              $existingUser = Get-LocalUser `
+                  -Name $username `
+                  -ErrorAction SilentlyContinue
+
+              if ($existingUser) {
+                  Write-Host "[+] المستخدم موجود مسبقًا، سيتم حذفه وإعادة إنشائه..." -ForegroundColor Yellow
+
+                  Remove-LocalUser `
+                      -Name $username `
+                      -ErrorAction SilentlyContinue
+              }
+
+              $secPass = ConvertTo-SecureString `
+                  $password `
+                  -AsPlainText `
+                  -Force
+
+              New-LocalUser `
+                  -Name $username `
+                  -Password $secPass `
+                  -FullName "RDP Admin" `
+                  -PasswordNeverExpires `
+                  -UserMayNotChangePassword:$false `
+                  -ErrorAction Stop |
+                  Out-Null
+
+              Add-LocalGroupMember `
+                  -Group "Administrators" `
+                  -Member $username `
+                  -ErrorAction Stop
+
+              Write-Host "[✓] تم إنشاء المستخدم بنجاح." -ForegroundColor Green
+              Write-Host "[✓] Username: $username" -ForegroundColor Green
+          }
+          catch {
+              Write-Host "[-] فشل إنشاء حساب RDP." -ForegroundColor Red
+              throw
+          }
+
+
+      # =========================================================
+      # 4) تشغيل SuperDMZ
+      # =========================================================
+      - name: Start SuperDMZ
+        shell: pwsh
+        env:
+          SUPERDMZ_TOKEN: ${{ secrets.SUPERDMZ_TOKEN }}
+          USER_RDP: ${{ inputs.username }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "[4/5] تشغيل SuperDMZ..." -ForegroundColor Cyan
+
+          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_TOKEN)) {
+              throw "[-] SUPERDMZ_TOKEN غير موجود في Secrets!"
+          }
+
+          $dmz = "$env:GITHUB_WORKSPACE\SuperDMZ.exe"
+
+          if (-not (Test-Path $dmz)) {
+              throw "[-] لم يتم العثور على SuperDMZ.exe!"
+          }
+
+          $outLog = "$env:RUNNER_TEMP\superdmz-out.log"
+          $errLog = "$env:RUNNER_TEMP\superdmz-err.log"
+
+          New-Item `
+              -ItemType File `
+              -Path $outLog `
+              -Force |
+              Out-Null
+
+          New-Item `
+              -ItemType File `
+              -Path $errLog `
+              -Force |
+              Out-Null
+
+          Write-Host "[+] تشغيل SuperDMZ..." -ForegroundColor Cyan
+
+          $process = Start-Process `
+              -FilePath $dmz `
+              -ArgumentList "-token `"$env:SUPERDMZ_TOKEN`"" `
+              -RedirectStandardOutput $outLog `
+              -RedirectStandardError $errLog `
+              -PassThru `
+              -WindowStyle Hidden
+
+          Write-Host "[✓] SuperDMZ يعمل." -ForegroundColor Green
+          Write-Host "[✓] PID: $($process.Id)" -ForegroundColor Green
+
+          Write-Host "============================================"
+          Write-Host "        WINDOWS RDP INFORMATION"
+          Write-Host "============================================"
+          Write-Host "Username: $env:USER_RDP"
+          Write-Host "Password: موجودة في Secret"
+          Write-Host "============================================"
+
+          Write-Host "[+] مراقبة SuperDMZ Live..." -ForegroundColor Cyan
+
+
+      # =========================================================
+      # 5) Live Monitoring
+      # =========================================================
+      - name: Live Monitoring
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outLog = "$env:RUNNER_TEMP\superdmz-out.log"
+          $errLog = "$env:RUNNER_TEMP\superdmz-err.log"
+
+          $process = Get-Process -Name "SuperDMZ" -ErrorAction SilentlyContinue
+
+          $lastOutLine = 0
+          $lastErrLine = 0
+
+          while ($true) {
+
+              $process = Get-Process -Name "SuperDMZ" -ErrorAction SilentlyContinue
+
+              if (-not $process) {
+                  Write-Host "[-] SuperDMZ process stopped." -ForegroundColor Red
+                  break
+              }
+
+              if (Test-Path $outLog) {
+
+                  $outLines = @(Get-Content $outLog -ErrorAction SilentlyContinue)
+
+                  if ($outLines.Count -gt $lastOutLine) {
+
+                      for ($i = $lastOutLine; $i -lt $outLines.Count; $i++) {
+                          Write-Host "[SuperDMZ] $($outLines[$i])" -ForegroundColor Gray
+                      }
+
+                      $lastOutLine = $outLines.Count
+                  }
+              }
+
+              if (Test-Path $errLog) {
+
+                  $errLines = @(Get-Content $errLog -ErrorAction SilentlyContinue)
+
+                  if ($errLines.Count -gt $lastErrLine) {
+
+                      for ($j = $lastErrLine; $j -lt $errLines.Count; $j++) {
+                          Write-Host "[SuperDMZ ERR] $($errLines[$j])" -ForegroundColor Red
+                      }
+
+                      $lastErrLine = $errLines.Count
+                  }
+              }
+
+              Start-Sleep -Seconds 3
+          }
+
+
+      # =========================================================
+      # Cleanup
+      # =========================================================
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+
+          Get-Process `
+              -Name "SuperDMZ" `
+              -ErrorAction SilentlyContinue |
+              Stop-Process `
+              -Force `
+              -ErrorAction SilentlyContinue
