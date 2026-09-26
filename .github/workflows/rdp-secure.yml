@@ -11,7 +11,8 @@ jobs:
     steps:
 
       # ==========================================================
-      # 1) Install + start SuperDMZ from private installer repo
+      # 1) Install + start SuperDMZ
+      #    from the private installer repository
       # ==========================================================
       - name: Install and Start SuperDMZ
         id: superdmz
@@ -50,7 +51,7 @@ jobs:
 
 
       # ==========================================================
-      # 3) Create RDP administrator
+      # 3) Create RDP Admin User
       # ==========================================================
       - name: Create RDP Admin User
         shell: pwsh
@@ -73,12 +74,16 @@ jobs:
           $username = $env:USER_RDP
           $password = $env:PASS_RDP
 
+          Write-Host "[+] Username: $username"
+
           $existingUser = Get-LocalUser `
               -Name $username `
               -ErrorAction SilentlyContinue
 
           if ($existingUser) {
-              Write-Host "[+] Existing user found. Removing..." -ForegroundColor Yellow
+
+              Write-Host "[+] Existing user found. Removing..." `
+                  -ForegroundColor Yellow
 
               Remove-LocalUser `
                   -Name $username `
@@ -103,12 +108,12 @@ jobs:
               -Member $username `
               -ErrorAction Stop
 
-          Write-Host "[✓] RDP user created." -ForegroundColor Green
-          Write-Host "[✓] Username: $username" -ForegroundColor Green
+          Write-Host "[✓] RDP administrator created." `
+              -ForegroundColor Green
 
 
       # ==========================================================
-      # 4) Verify SuperDMZ
+      # 4) Verify SuperDMZ process
       # ==========================================================
       - name: Verify SuperDMZ
         shell: pwsh
@@ -120,10 +125,15 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "[4/5] Verifying SuperDMZ..." -ForegroundColor Cyan
+          Write-Host "[4/5] Verifying SuperDMZ..." `
+              -ForegroundColor Cyan
 
           if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_PID)) {
               throw "SUPERDMZ_PID output is missing."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_EXE)) {
+              throw "SUPERDMZ_EXE output is missing."
           }
 
           Write-Host "[+] PID: $env:SUPERDMZ_PID"
@@ -135,29 +145,39 @@ jobs:
 
           if (-not $process) {
 
-              Write-Host "[-] SuperDMZ stopped." -ForegroundColor Red
+              Write-Host `
+                  "[-] SuperDMZ stopped before verification." `
+                  -ForegroundColor Red
 
               if (Test-Path $env:SUPERDMZ_OUT_LOG) {
                   Write-Host ""
                   Write-Host "===== STDOUT ====="
-                  Get-Content $env:SUPERDMZ_OUT_LOG
+                  Get-Content `
+                      $env:SUPERDMZ_OUT_LOG `
+                      -ErrorAction SilentlyContinue
               }
 
               if (Test-Path $env:SUPERDMZ_ERR_LOG) {
                   Write-Host ""
                   Write-Host "===== STDERR ====="
-                  Get-Content $env:SUPERDMZ_ERR_LOG
+                  Get-Content `
+                      $env:SUPERDMZ_ERR_LOG `
+                      -ErrorAction SilentlyContinue
               }
 
               throw "SuperDMZ is not running."
           }
 
-          Write-Host "[✓] SuperDMZ is running." -ForegroundColor Green
-          Write-Host "[✓] PID: $($process.Id)" -ForegroundColor Green
+          Write-Host "[✓] SuperDMZ is running." `
+              -ForegroundColor Green
+
+          Write-Host `
+              "[✓] PID: $($process.Id)" `
+              -ForegroundColor Green
 
 
       # ==========================================================
-      # 5) Keep the Windows runner alive
+      # 5) Keep runner alive and monitor SuperDMZ
       # ==========================================================
       - name: Live Monitoring
         shell: pwsh
@@ -170,49 +190,84 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "[5/5] Live monitoring started..." -ForegroundColor Cyan
+          Write-Host `
+              "[5/5] Live monitoring started..." `
+              -ForegroundColor Cyan
 
           $superdmzPid = [int]$env:SUPERDMZ_PID
 
           while ($true) {
 
+              # --------------------------------------------------
+              # Check current process
+              # --------------------------------------------------
+
               $process = Get-Process `
                   -Id $superdmzPid `
                   -ErrorAction SilentlyContinue
 
+              # --------------------------------------------------
+              # If SuperDMZ stopped, restart it
+              # --------------------------------------------------
+
               if (-not $process) {
 
-                  Write-Host "[-] SuperDMZ stopped." -ForegroundColor Yellow
-                  Write-Host "[+] Attempting automatic restart..." -ForegroundColor Yellow
+                  Write-Host `
+                      "[-] SuperDMZ stopped." `
+                      -ForegroundColor Yellow
+
+                  Write-Host `
+                      "[+] Restarting SuperDMZ..." `
+                      -ForegroundColor Yellow
+
+                  if (-not (Test-Path $env:SUPERDMZ_EXE)) {
+                      throw "SuperDMZ executable no longer exists."
+                  }
 
                   $newProcess = Start-Process `
                       -FilePath $env:SUPERDMZ_EXE `
                       -ArgumentList "-token `"$($env:SUPERDMZ_TOKEN)`"" `
-                      -WorkingDirectory (Split-Path $env:SUPERDMZ_EXE) `
-                      -RedirectStandardOutput $env:SUPERDMZ_OUT_LOG `
-                      -RedirectStandardError $env:SUPERDMZ_ERR_LOG `
+                      -WorkingDirectory `
+                          (Split-Path $env:SUPERDMZ_EXE) `
+                      -RedirectStandardOutput `
+                          $env:SUPERDMZ_OUT_LOG `
+                      -RedirectStandardError `
+                          $env:SUPERDMZ_ERR_LOG `
                       -PassThru `
                       -WindowStyle Hidden
 
                   Start-Sleep -Seconds 5
 
+                  # ------------------------------------------------
+                  # Verify restart
+                  # ------------------------------------------------
+
                   if ($newProcess.HasExited) {
 
-                      Write-Host "[-] SuperDMZ restart failed." -ForegroundColor Red
-                      Write-Host "ExitCode: $($newProcess.ExitCode)" -ForegroundColor Red
+                      Write-Host `
+                          "[-] SuperDMZ restart failed." `
+                          -ForegroundColor Red
+
+                      Write-Host `
+                          "ExitCode: $($newProcess.ExitCode)" `
+                          -ForegroundColor Red
 
                       Write-Host ""
                       Write-Host "===== STDOUT ====="
 
                       if (Test-Path $env:SUPERDMZ_OUT_LOG) {
-                          Get-Content $env:SUPERDMZ_OUT_LOG
+                          Get-Content `
+                              $env:SUPERDMZ_OUT_LOG `
+                              -ErrorAction SilentlyContinue
                       }
 
                       Write-Host ""
                       Write-Host "===== STDERR ====="
 
                       if (Test-Path $env:SUPERDMZ_ERR_LOG) {
-                          Get-Content $env:SUPERDMZ_ERR_LOG
+                          Get-Content `
+                              $env:SUPERDMZ_ERR_LOG `
+                              -ErrorAction SilentlyContinue
                       }
 
                       exit 1
@@ -220,9 +275,48 @@ jobs:
 
                   $superdmzPid = $newProcess.Id
 
-                  Write-Host "[✓] SuperDMZ restarted." -ForegroundColor Green
-                  Write-Host "[✓] New PID: $superdmzPid" -ForegroundColor Green
+                  Write-Host `
+                      "[✓] SuperDMZ restarted successfully." `
+                      -ForegroundColor Green
+
+                  Write-Host `
+                      "[✓] New PID: $superdmzPid" `
+                      -ForegroundColor Green
               }
+
+              # --------------------------------------------------
+              # Monitor logs
+              # --------------------------------------------------
+
+              if (Test-Path $env:SUPERDMZ_OUT_LOG) {
+
+                  Get-Content `
+                      $env:SUPERDMZ_OUT_LOG `
+                      -ErrorAction SilentlyContinue |
+                      Select-Object -Last 5 |
+                      ForEach-Object {
+                          Write-Host `
+                              "[SuperDMZ] $_" `
+                              -ForegroundColor Gray
+                      }
+              }
+
+              if (Test-Path $env:SUPERDMZ_ERR_LOG) {
+
+                  Get-Content `
+                      $env:SUPERDMZ_ERR_LOG `
+                      -ErrorAction SilentlyContinue |
+                      Select-Object -Last 5 |
+                      ForEach-Object {
+                          Write-Host `
+                              "[SuperDMZ ERR] $_" `
+                              -ForegroundColor Red
+                      }
+              }
+
+              # --------------------------------------------------
+              # Wait before next check
+              # --------------------------------------------------
 
               Start-Sleep -Seconds 5
           }
@@ -235,9 +329,14 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          Write-Host "[+] Cleanup..." -ForegroundColor Cyan
+
           Get-Process `
               -Name "SuperDMZ" `
               -ErrorAction SilentlyContinue |
               Stop-Process `
               -Force `
               -ErrorAction SilentlyContinue
+
+          Write-Host "[✓] Cleanup complete." `
+              -ForegroundColor Green
