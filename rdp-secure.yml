@@ -43,11 +43,11 @@ jobs:
           Enable-NetFirewallRule `
               -DisplayGroup "Remote Desktop"
 
-          Write-Host "[✓] RDP enabled." -ForegroundColor Green
+          Write-Host "[✓] Windows RDP enabled." -ForegroundColor Green
 
 
       # ==========================================================
-      # 3) Create RDP Admin User
+      # 3) Create RDP administrator
       # ==========================================================
       - name: Create RDP Admin User
         shell: pwsh
@@ -60,11 +60,11 @@ jobs:
           Write-Host "[3/5] Creating RDP user..." -ForegroundColor Cyan
 
           if ([string]::IsNullOrWhiteSpace($env:USER_RDP)) {
-              throw "USER_RDP is missing!"
+              throw "USER_RDP is missing."
           }
 
           if ([string]::IsNullOrWhiteSpace($env:PASS_RDP)) {
-              throw "PASS_RDP is missing!"
+              throw "PASS_RDP is missing."
           }
 
           $username = $env:USER_RDP
@@ -75,7 +75,8 @@ jobs:
               -ErrorAction SilentlyContinue
 
           if ($existingUser) {
-              Write-Host "[+] Existing user detected. Removing..." -ForegroundColor Yellow
+
+              Write-Host "[+] Existing user found. Removing..." -ForegroundColor Yellow
 
               Remove-LocalUser `
                   -Name $username `
@@ -100,7 +101,7 @@ jobs:
               -Member $username `
               -ErrorAction Stop
 
-          Write-Host "[✓] RDP user created." -ForegroundColor Green
+          Write-Host "[✓] RDP account created." -ForegroundColor Green
           Write-Host "[✓] Username: $username" -ForegroundColor Green
 
 
@@ -118,7 +119,7 @@ jobs:
           Write-Host "[4/5] Starting SuperDMZ..." -ForegroundColor Cyan
 
           if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_TOKEN)) {
-              throw "SUPERDMZ_TOKEN is missing!"
+              throw "SUPERDMZ_TOKEN is missing."
           }
 
           $dmz = Join-Path `
@@ -126,7 +127,7 @@ jobs:
               "SuperDMZ.exe"
 
           if (-not (Test-Path $dmz)) {
-              throw "SuperDMZ.exe not found!"
+              throw "SuperDMZ.exe was not found."
           }
 
           $outLog = Join-Path `
@@ -165,12 +166,12 @@ jobs:
           Write-Host "          WINDOWS RDP INFORMATION" -ForegroundColor Yellow
           Write-Host "============================================" -ForegroundColor Yellow
           Write-Host "Username: $env:USER_RDP" -ForegroundColor Green
-          Write-Host "Password: stored in repository variable" -ForegroundColor Yellow
+          Write-Host "Password: configured in Variables" -ForegroundColor Yellow
           Write-Host "============================================" -ForegroundColor Yellow
 
 
       # ==========================================================
-      # 5) Live Monitoring
+      # 5) Live monitoring
       # ==========================================================
       - name: Live Monitoring
         shell: pwsh
