@@ -9,58 +9,170 @@ jobs:
     timeout-minutes: 360
 
     steps:
+
+      # =========================================================
+      # 1) التأكد أن الـRunner هو Public
+      # =========================================================
       - name: Verify PUBLIC runner
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = "Stop"
+
           $cs = Get-CimInstance Win32_ComputerSystem
           $ramGB = [math]::Round($cs.TotalPhysicalMemory / 1GB, 2)
-          Write-Host "RAM: $ramGB GB"
-          Write-Host "CPU: $($cs.NumberOfLogicalProcessors)"
-          Write-Host "RUNNER: $env:RUNNER_NAME"
-          if ($ramGB -lt 12) { throw "Expected PUBLIC 16-GB-class runner, detected $ramGB GB." }
 
-      - name: Use public installer repo
+          Write-Host "============================================"
+          Write-Host "RRRDP - PUBLIC RUNNER"
+          Write-Host "============================================"
+          Write-Host "RAM       : $ramGB GB"
+          Write-Host "CPU       : $($cs.NumberOfLogicalProcessors)"
+          Write-Host "RUNNER    : $env:RUNNER_NAME"
+          Write-Host "OS        : $env:RUNNER_OS"
+          Write-Host "============================================"
+
+          if ($ramGB -lt 12) {
+              throw "Expected a 16-GB-class PUBLIC runner, but detected $ramGB GB."
+          }
+
+      # =========================================================
+      # 2) جلب Installer من الـPUBLIC repo
+      #    لا يحتاج PAT
+      # =========================================================
+      - name: Get public SuperDMZ installer repo
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/RDP_SEC_001_INSTALLER_WIN_11
+          repository: drisrida123455-wq/RDP-SEC-001-INSTALLER-WIN-11
           path: installer-repo
           fetch-depth: 1
           show-progress: false
+          clean: true
 
+      # =========================================================
+      # 3) تثبيت SuperDMZ على نفس الـPUBLIC Runner
+      # =========================================================
       - name: Install SuperDMZ
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $setup = Join-Path $env:GITHUB_WORKSPACE 'installer-repo\SuperDMZ.exe'
-          if (-not (Test-Path $setup)) { throw 'SuperDMZ.exe not found.' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'SuperDMZ'
-          New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=`"$installDir`"") -WorkingDirectory $installDir -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Installer failed. ExitCode=$($p.ExitCode)" }
-          Start-Sleep -Seconds 5
-          $client = Get-ChildItem -Path $installDir -Recurse -File -Filter 'superdmz-client.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $client) {
-            $client = Get-ChildItem -Path $installDir -Recurse -File -Filter 'superdmz*.exe' -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -notmatch 'setup|unins' } | Select-Object -First 1
-          }
-          if (-not $client) { throw 'SuperDMZ client executable not found.' }
-          "SUPERDMZ_EXE=$($client.FullName)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host '[OK] SuperDMZ installed on PUBLIC runner.'
+          $ErrorActionPreference = "Stop"
 
-      - name: Materialize SEC_CODE secret
+          $setup = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "installer-repo\SuperDMZ.exe"
+
+          if (-not (Test-Path $setup)) {
+              throw "SuperDMZ.exe was not found in RDP-SEC-001-INSTALLER-WIN-11."
+          }
+
+          Write-Host "[+] Installer:"
+          Write-Host $setup
+
+          $installDir = Join-Path `
+            $env:RUNNER_TEMP `
+            "SuperDMZ"
+
+          New-Item `
+            -ItemType Directory `
+            -Path $installDir `
+            -Force |
+            Out-Null
+
+          $installer = Start-Process `
+            -FilePath $setup `
+            -ArgumentList @(
+              "/VERYSILENT"
+              "/SUPPRESSMSGBOXES"
+              "/NORESTART"
+              "/DIR=`"$installDir`""
+            ) `
+            -WorkingDirectory $installDir `
+            -Wait `
+            -PassThru
+
+          Write-Host "[+] Installer ExitCode: $($installer.ExitCode)"
+
+          if ($installer.ExitCode -ne 0) {
+              throw "SuperDMZ installation failed. ExitCode=$($installer.ExitCode)"
+          }
+
+          Start-Sleep -Seconds 5
+
+          $client = Get-ChildItem `
+            -Path $installDir `
+            -Recurse `
+            -File `
+            -Filter "superdmz-client.exe" `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $client) {
+
+              $client = Get-ChildItem `
+                -Path $installDir `
+                -Recurse `
+                -File `
+                -Filter "superdmz*.exe" `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -notmatch "setup|unins"
+                } |
+                Select-Object -First 1
+          }
+
+          if (-not $client) {
+              throw "SuperDMZ client executable was not found."
+          }
+
+          Write-Host "[✓] SuperDMZ client found."
+
+          "SUPERDMZ_EXE=$($client.FullName)" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+      # =========================================================
+      # 4) أخذ SEC_CODE من Secret
+      #    وتحويله إلى ملف مؤقت على Public Runner
+      # =========================================================
+      - name: Materialize SEC_CODE
         shell: pwsh
         env:
           SEC_CODE: ${{ secrets.SEC_CODE }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:SEC_CODE)) { throw 'SEC_CODE secret is missing.' }
-          $script = Join-Path $env:RUNNER_TEMP 'RRRDP-secure.ps1'
-          $utf8 = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllText($script, $env:SEC_CODE, $utf8)
-          "RRRDP_SCRIPT=$script" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host '[OK] SEC_CODE written to temporary runner file.'
+          $ErrorActionPreference = "Stop"
 
+          if ([string]::IsNullOrWhiteSpace($env:SEC_CODE)) {
+              throw "SEC_CODE secret is missing."
+          }
+
+          $script = Join-Path `
+            $env:RUNNER_TEMP `
+            "RRRDP-secure.ps1"
+
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+
+          [System.IO.File]::WriteAllText(
+            $script,
+            $env:SEC_CODE,
+            $utf8
+          )
+
+          "RRRDP_SCRIPT=$script" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Append `
+              -Encoding utf8
+
+          Write-Host "[✓] SEC_CODE loaded."
+          Write-Host "[✓] Source contents were not printed."
+
+      # =========================================================
+      # 5) تشغيل SEC_CODE على الـPUBLIC Runner
+      #
+      #    SUPERDMZ_TOKEN = Secret
+      #    USER_RDP       = Variable
+      #    PASS_RDP       = Variable
+      # =========================================================
       - name: Execute SEC_CODE on PUBLIC runner
         shell: pwsh
         env:
@@ -68,22 +180,80 @@ jobs:
           USER_RDP: ${{ vars.USER_RDP }}
           PASS_RDP: ${{ vars.PASS_RDP }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_TOKEN)) { throw 'SUPERDMZ_TOKEN is missing.' }
-          if ([string]::IsNullOrWhiteSpace($env:USER_RDP)) { throw 'USER_RDP is missing.' }
-          if ([string]::IsNullOrWhiteSpace($env:PASS_RDP)) { throw 'PASS_RDP is missing.' }
-          if (-not (Test-Path $env:RRRDP_SCRIPT)) { throw 'SEC_CODE file is missing.' }
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:SUPERDMZ_TOKEN)) {
+              throw "SUPERDMZ_TOKEN is missing."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:USER_RDP)) {
+              throw "USER_RDP is missing."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:PASS_RDP)) {
+              throw "PASS_RDP is missing."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:RRRDP_SCRIPT)) {
+              throw "RRRDP_SCRIPT is missing."
+          }
+
+          if (-not (Test-Path $env:RRRDP_SCRIPT)) {
+              throw "SEC_CODE file was not created."
+          }
+
           Write-Output "::add-mask::$env:SUPERDMZ_TOKEN"
           Write-Output "::add-mask::$env:USER_RDP"
           Write-Output "::add-mask::$env:PASS_RDP"
-          Write-Host '[+] Executing SEC_CODE on PUBLIC runner.'
-          & pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $env:RRRDP_SCRIPT
-          if ($LASTEXITCODE -ne 0) { throw "SEC_CODE failed. ExitCode=$LASTEXITCODE" }
 
+          Write-Host "============================================"
+          Write-Host "RRRDP"
+          Write-Host "EXECUTION: PUBLIC RUNNER"
+          Write-Host "============================================"
+
+          & pwsh `
+            -NoLogo `
+            -NoProfile `
+            -NonInteractive `
+            -ExecutionPolicy Bypass `
+            -File $env:RRRDP_SCRIPT
+
+          $exitCode = $LASTEXITCODE
+
+          if ($exitCode -ne 0) {
+              throw "SEC_CODE failed. ExitCode=$exitCode"
+          }
+
+          Write-Host "[✓] SEC_CODE finished successfully." `
+            -ForegroundColor Green
+
+      # =========================================================
+      # 6) تنظيف
+      # =========================================================
       - name: Cleanup
         if: always()
         shell: pwsh
         run: |
-          Get-Process -Name 'superdmz-client' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Get-Process -Name 'SuperDMZ' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Remove-Item (Join-Path $env:RUNNER_TEMP 'RRRDP-secure.ps1') -Force -ErrorAction SilentlyContinue
+
+          Get-Process `
+            -Name "superdmz-client" `
+            -ErrorAction SilentlyContinue |
+            Stop-Process `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          Get-Process `
+            -Name "SuperDMZ" `
+            -ErrorAction SilentlyContinue |
+            Stop-Process `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+          if ($env:RRRDP_SCRIPT -and (Test-Path $env:RRRDP_SCRIPT)) {
+              Remove-Item `
+                $env:RRRDP_SCRIPT `
+                -Force `
+                -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "[✓] Cleanup complete."
